@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.py": "python",
+        "*.html": "html",
+        "fcntl.h": "c",
+        "unistd.h": "c",
+        "cstdlib": "c",
+        "stdio.h": "c",
+        "stdlib.h": "c",
+        "time.h": "c",
+        "sdl_image.h": "c",
+        "chip8gui.h": "c"
+    }
+}
