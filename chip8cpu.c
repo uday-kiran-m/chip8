@@ -2,7 +2,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include <SDL2/SDL.h>
 #include "chip8gui.h"
+#include <pthread.h>
+#include <unistd.h>
 
 uint16_t PROGRAM_COUNTER = 0x200;
 uint8_t REGISTERS[16]; // 16 8 bit registers V0-VF use indexing
@@ -10,6 +13,10 @@ uint16_t REG_I;
 uint16_t STACK[12];
 extern unsigned char *MEMptr;
 int STACK_index = -1;
+uint8_t delay_timer = 0;
+unsigned int inputchar=0x10;
+pthread_t delay_timer_id;
+int KeepDelay;
 
 
 
@@ -65,21 +72,21 @@ void op_0(int opcode)
 void op_1(int opcode)
 {
     // 1NNN jump to NNN address
-    PROGRAM_COUNTER = (opcode - 0x1000) - 2;
+    PROGRAM_COUNTER = (opcode & 0x0FFF) - 2;
 }
 
 void op_2(int opcode)
 {
     // 2NNN execute subroutine at NNN
     stackPUSH(PROGRAM_COUNTER);
-    PROGRAM_COUNTER = (opcode - 0x2000) - 2;
+    PROGRAM_COUNTER = (opcode & 0x0FFF) - 2;
 }
 
 void op_3(int opcode)
 {
     // 3XNN check if reg VX == NN and skip following instruction if so
     int v_reg = (opcode & 0x0F00) >> 8;
-    int val = opcode - 0x3000 - (v_reg << 8);
+    int val = (opcode & 0x00FF);
     if (REGISTERS[v_reg] == val)
     {
         PROGRAM_COUNTER += 2; // skipping the next instruction
@@ -169,8 +176,8 @@ void op_8(int opcode)
         break;
     case 5:
         // 8XY5 VX = VX - VY, VF=1 if no borrow
-        int t1 = REGISTERS[vx_reg];
-        int t2 = REGISTERS[vy_reg];
+        // int t1 = REGISTERS[vx_reg];
+        // int t2 = REGISTERS[vy_reg];
         
         if (REGISTERS[vx_reg] >= REGISTERS[vy_reg])
         {
@@ -185,8 +192,9 @@ void op_8(int opcode)
         break;
     case 6:
         // 8XY6 VX = VY >> 1, VF = least sign bit of VY before shift
-        REGISTERS[0xF] = REGISTERS[vy_reg] & 0x01; // capturing last bit
+        vf = REGISTERS[vy_reg] & 0x01; // capturing last bit
         REGISTERS[vx_reg] = REGISTERS[vy_reg] >> 1;
+        REGISTERS[0xF] = vf;
         break;
     case 7:
         // 8XY7 set VX = VY-VX, VF=1 if no borrow
@@ -203,7 +211,7 @@ void op_8(int opcode)
         break;
     case 0xE:
         // 8XYE VX = VY << 1, VF = most sign bit of VY before shift
-        vf = REGISTERS[vy_reg] & 0x80; // capturing first bit
+        vf = (REGISTERS[vy_reg] & 128)>>7; // capturing first bit
         REGISTERS[vx_reg] = REGISTERS[vy_reg] << 1;
         REGISTERS[0xF] = vf;
         break;
@@ -256,22 +264,28 @@ void op_D(int opcode)
     int vx_reg = (opcode & 0x0F00) >> 8;
     int vy_reg = (opcode & 0x00F0) >> 4;
     int nbytes = (opcode & 0x000F);
-    drawchar(REG_I,REGISTERS[vx_reg],REGISTERS[vy_reg],nbytes);
+    REGISTERS[0xF]=drawchar(REG_I,REGISTERS[vx_reg],REGISTERS[vy_reg],nbytes);
+    // drawcharold(REG_I,REGISTERS[vx_reg],REGISTERS[vy_reg],nbytes);
     // clearscr();
 }
 
 void op_E(int opcode)
 {
     
-    int v_reg = (opcode % 0x0F00) >> 8;
+    int v_reg = (opcode & 0x0F00) >> 8;
+    // printf("key:%x\n",inputchar);
     switch(opcode&0x00FF){
         case 0x9E:
             // EX9E skip following instruction if hex key pressed value == VX
-
+            if( REGISTERS[v_reg]==inputchar){
+                PROGRAM_COUNTER+=2;
+            }
             break;
         case 0xA1:
             // EXA1 skip following instruction if hex key pressed value != VX
-
+             if( REGISTERS[v_reg]!=inputchar){
+                PROGRAM_COUNTER+=2;
+            }
             break;
         default:
             printf("Unknown opcode %x\n",opcode);
@@ -280,18 +294,25 @@ void op_E(int opcode)
 
 void op_F(int opcode)
 {
-    int v_reg = (opcode % 0x0F00) >> 8;
+    int v_reg = (opcode & 0x0F00) >> 8;
     switch(opcode&0x00FF){
         case 0x07:
             // FX07 put delay timer value in VX
+            REGISTERS[v_reg] = delay_timer;
 
             break;
         case 0x0A:
             // FX0A wait for keypress and store in VX
+            if(inputchar>0xf){
+                PROGRAM_COUNTER-=2;
+            }
+            // printf("key-:%x\n",inputchar);
+            REGISTERS[v_reg] = inputchar;
 
             break;
         case 0x15:
             // FX15 delay timer = VX
+            delay_timer = REGISTERS[v_reg];
 
             break;
         case 0x18:
@@ -301,6 +322,15 @@ void op_F(int opcode)
         case 0x1E:
             // FX1E reg I = I + VX
             REG_I = REG_I + REGISTERS[v_reg];
+            if(REG_I>=0x1000)
+            {
+                REGISTERS[0xf]=1;
+
+            }
+            else{
+                REGISTERS[0xf]=0;
+                
+            }
             break;
         case 0x29:
             // FX29 set I to memaddress of character stored in VX
@@ -337,11 +367,33 @@ void op_F(int opcode)
     }
 }
 
+void delaytimer(void* args){
+    while(KeepDelay){
+    if (delay_timer){
+        delay_timer-=1;
+        
+    }
+    // printf("delay\n");
+    usleep(1666);
+    }
+}
+
 void cpuRunner(int ROMsize)
 {
     srand(time(NULL));
+    KeepDelay = 1;
+    pthread_create(&delay_timer_id,NULL,delaytimer,NULL);
+    printf("thread started");
     while (PROGRAM_COUNTER < (ROMsize + 0x200))
     {
+        // SDL_Delay(delay_timer);
+        usleep(delay_timer*100);
+        // if(delay_timer>2){
+        //     delay_timer-=2;
+        // }
+        // else if(delay_timer){
+        //     delay_timer-=1;
+        // }
         // printf("%x", PROGRAM_COUNTER);
         int ev = getevent();
         if( ev!= -1){
@@ -351,7 +403,7 @@ void cpuRunner(int ROMsize)
 
         }
         int opcode = MEMptr[PROGRAM_COUNTER] << 8 | MEMptr[PROGRAM_COUNTER + 1];
-        printf("Current opcode: %x\n", opcode);
+        // printf("Current opcode: %x\n", opcode);
         switch (opcode >> 12)
         {
         case 0:
@@ -424,4 +476,7 @@ void cpuRunner(int ROMsize)
         }
         PROGRAM_COUNTER += 2;
     }
+    KeepDelay = 0;
+    pthread_join(delay_timer_id,NULL);
+    
 }

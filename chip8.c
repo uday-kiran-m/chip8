@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "chip8cpu.h"
 #include "chip8gui.h"
-#define CHIP8_ROM "roms/puzzle2.ch8"
+#define CHIP8_ROM "roms/space.ch8"
 
 
 int ROM_SIZE;
